@@ -1,0 +1,1 @@
+# wazuh-mini-soc
