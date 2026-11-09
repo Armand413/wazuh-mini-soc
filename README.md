@@ -126,9 +126,13 @@ hydra -l ubuntu -P /tmp/mots.txt -t 4 -f ssh://192.168.77.50
 | Alertes dans Wazuh | **33 alertes** d'échec d'authentification sur `sensor` dans l'heure suivant l'essai, contre 5 pour le test manuel : le volume d'alertes suit le volume d'essais |
 | Règle franchie | Une alerte **« sshd: brute force trying... »** apparaît dans le Top 5 des alertes, absente du premier essai : le passage de 3 à 20 échecs rapprochés a déclenché la règle de force brute |
 | Nouveaux groupes et conformité | Apparition du groupe `access_control` en tête, et de l'exigence PCI DSS **11.4** (détection d'intrusion), en plus de 10.2.4 et 10.2.5 déjà vues |
-| Niveau 12 ou plus | 0 — la règle de force brute s'est déclenchée à un niveau de gravité inférieur à 12, à confirmer avec le détail de l'alerte |
+| Niveau 12 ou plus | 0 — la règle de force brute s'est déclenchée au niveau 10 |
+| Règle déclenchée | `sshd: brute force trying to get access to the system. Authentication failed.` — **rule.id 5763**, **niveau 10** |
+| Heure de l'alerte | 11:08:18.721 UTC |
+| Début de l'attaque | 11:08:02 UTC (après correction du fuseau horaire de Kali, voir ci-dessous) |
+| **Temps de détection** | **≈ 17 secondes** |
 
-**Lecture** : le seuil de détection de force brute se situe entre 3 échecs (non détecté comme force brute) et 20 échecs en 24 secondes (détecté). Le `rule.id` exact et le niveau précis de l'alerte « brute force » restent à relever dans l'onglet Events, de même que l'heure exacte de l'alerte pour calculer le temps de détection.
+**Lecture** : le seuil de détection de force brute se situe entre 3 échecs (non détecté comme force brute, règle `syslog: User missed the password...`) et 20 échecs en 24 secondes (détecté par la règle 5763, niveau 10). Wazuh a déclenché l'alerte avant même la fin de l'attaque hydra (24 s), ce qui donne un temps de détection d'environ 17 secondes.
 
 ## Retour d'expérience
 
@@ -139,6 +143,7 @@ hydra -l ubuntu -P /tmp/mots.txt -t 4 -f ssh://192.168.77.50
 | Services `inactive` après restauration d'un snapshot | `inactive` s'affiche aussi pour un service jamais installé. | Contrôle de l'installation avec `dpkg -l` avant de conclure à un échec. |
 | « No results » dans le tableau de bord après l'attaque | La période sélectionnée était un seul instant (début égal à fin), donc vide par construction. | Réglage sur « Last 1 hour » : les alertes sont apparues. Une vue vide ne prouve pas l'absence de détection. |
 | Fuseau horaire affiché différent de celui des journaux | Le tableau de bord affichait une heure locale, les journaux de `sensor` sont en UTC. | Comparer toujours deux heures dans le même fuseau avant de calculer un temps de détection. |
+| Horloge de Kali mal réglée (fuseau America/New_York, -5h) | Les heures notées sur Kali lors de l'attaque hydra (06:08:02) ne correspondaient pas à l'heure UTC des alertes Wazuh (11:08). Un temps de détection calculé directement aurait été faux de 5 heures. | `sudo timedatectl set-ntp true` puis `sudo timedatectl set-timezone UTC` sur Kali, pour aligner toutes les machines du laboratoire sur UTC. Les heures ont été recalculées a posteriori en convertissant l'heure locale de Kali en UTC. |
 | Noms d'interface réseau différents selon les VM | Le Host-Only est `enp0s3` sur une VM et `enp0s8` sur une autre. | Vérification systématique avec `ip -br addr` avant toute modification réseau. |
 
 ## Avancement
@@ -150,7 +155,7 @@ hydra -l ubuntu -P /tmp/mots.txt -t 4 -f ssh://192.168.77.50
 - [ ] Aligner les versions du manager et de l'agent
 - [x] Première détection : échecs d'authentification SSH depuis Kali, alertes visibles dans Wazuh
 - [x] Scénario de force brute (hydra, 20 essais) : règle « brute force » déclenchée
-- [ ] Relevé précis des `rule.id`, niveaux et heures de chaque alerte (temps de détection)
+- [x] Relevé précis de la règle de force brute (`rule.id` 5763, niveau 10) et calcul du temps de détection (≈ 17 s)
 - [ ] Mesure des faux positifs sur trafic légitime
 - [ ] Mesures : taux de détection, faux positifs, temps de détection
 - [ ] Règles de détection personnalisées, cartographiées sur MITRE ATT&CK
@@ -167,7 +172,7 @@ hydra -l ubuntu -P /tmp/mots.txt -t 4 -f ssh://192.168.77.50
 |---|---|---|---|---|
 | Échecs SSH, utilisateur inexistant | | | | |
 | Échecs SSH, utilisateur existant (manuel) | 1 essai, 3 échecs | Oui : 5 alertes d'échec d'authentification | Non mesurés | À relever |
-| Force brute SSH (hydra, dictionnaire) | 1 essai, 20 échecs en 24 s | Oui : 33 alertes, dont la règle « brute force » | Non mesurés | À relever |
+| Force brute SSH (hydra, dictionnaire) | 1 essai, 20 échecs en 24 s | Oui : 33 alertes, dont la règle 5763 (niveau 10) « brute force » | Non mesurés | ≈ 17 s |
 | Force brute SSH (hydra depuis Kali) | | | | |
 
 Protocole : plusieurs essais par scénario, heure de l'attaque et heure de l'alerte relevées, résultats consignés dans [`reports/`](reports/).
@@ -213,5 +218,6 @@ Objectif : opérations de sécurité (SOC) et conception de solutions de cybers�
 
 | 9 nov. 2026 | Première attaque SSH depuis Kali contre `sensor` (3 échecs, compte existant) : traces dans `auth.log` et 5 alertes d'authentification dans Wazuh. |
 | 9 nov. 2026 | Force brute automatisée avec hydra (20 essais en 24 s) : 33 alertes générées, règle « brute force » franchie pour la première fois. Nouvelle exigence PCI DSS 11.4 associée. |
+| 9 nov. 2026 | Correction d'un décalage d'horloge sur Kali (fuseau America/New_York au lieu d'UTC). Alerte de force brute identifiée précisément : règle 5763, niveau 10, déclenchée à 11:08:18 UTC, soit environ 17 secondes après le début de l'attaque. |
 
-*Prochaine étape : relevé précis des `rule.id`, niveaux et heures dans l'onglet Events pour calculer le temps de détection, mesure des faux positifs sur trafic légitime, puis règle de détection personnalisée.*
+*Prochaine étape : mesure des faux positifs sur trafic légitime, répétition des scénarios pour des statistiques fiables, puis règle de détection personnalisée (utilisateur invalide, cartographie MITRE ATT&CK).*
