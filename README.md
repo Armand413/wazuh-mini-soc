@@ -66,9 +66,13 @@ Hôte : PC Windows, Intel Core i7-1185G7, 16 Go de RAM. Le détail est dans [`ar
 
 ![Liste des agents Wazuh avec sensor à l'état active](screenshots/agent-sensor-active.jpeg)
 
-**Première détection** : alertes d'authentification générées sur `sensor` après des échecs SSH depuis Kali (vue de l'agent, dernière heure) :
+**Détection d'échecs SSH** (essai manuel, 3 échecs) :
 
 ![Tableau de bord Threat Hunting de l'agent sensor après des échecs SSH](screenshots/detection-ssh-dashboard.png)
+
+**Détection de force brute** (hydra, 20 essais, règle « brute force » déclenchée) :
+
+![Tableau de bord Threat Hunting de l'agent sensor après une attaque hydra, avec l'alerte brute force dans le Top 5](screenshots/detection-bruteforce-dashboard.png)
 
 ## Déploiement
 
@@ -98,16 +102,33 @@ sudo systemctl enable --now wazuh-agent
 
 ## Première détection
 
-**Scénario joué** : trois échecs d'authentification SSH vers `sensor`, depuis Kali (192.168.77.10), avec un compte existant (`ubuntu`) et un mauvais mot de passe.
+### Essai 1 : échecs manuels (compte existant)
+
+Trois échecs d'authentification SSH vers `sensor`, depuis Kali (192.168.77.10), avec un compte existant (`ubuntu`) et un mauvais mot de passe.
 
 | Étape | Observation |
 |---|---|
-| Trace sur `sensor` (`/var/log/auth.log`) | `authentication failure`, puis `Failed password for ubuntu from 192.168.77.10`, puis deux échecs répétés, de 10:49:27 à 10:49:43 (UTC). L'IP de l'attaquant est bien journalisée. |
-| Alertes dans Wazuh | 5 alertes d'échec d'authentification sur l'agent `sensor` dans l'heure de l'essai, 0 alerte de niveau 12 ou supérieur, 0 authentification réussie. |
-| Types d'alertes | `sshd: authentication failed`, `PAM: User login failed`, et un message `syslog` de type mot de passe manqué. |
-| Groupes de règles | `authentication_failed`, `sshd`, `pam`, `syslog`, `access_control`, avec les exigences PCI DSS 10.2.4 et 10.2.5 associées automatiquement. |
+| Trace sur `sensor` (`/var/log/auth.log`) | `authentication failure`, puis `Failed password for ubuntu from 192.168.77.10`, puis deux échecs répétés, de 10:49:27 à 10:49:43 (UTC). |
+| Alertes dans Wazuh | 5 alertes d'échec d'authentification, 0 alerte de niveau 12 ou supérieur, 0 authentification réussie. |
+| Types d'alertes | `sshd: authentication failed`, `PAM: User login failed`, un message `syslog` de mot de passe manqué. |
 
-**Lecture** : trois échecs suffisent à produire des alertes de gravité faible. Le seuil de l'alerte de force brute reste à tester avec davantage d'échecs rapprochés. Les identifiants de règles (`rule.id`), les niveaux exacts et les temps de détection seront relevés alert par alerte dans l'onglet Events avant d'être publiés.
+### Essai 2 : force brute automatisée (hydra)
+
+Attaque par dictionnaire avec `hydra`, 20 mots de passe testés contre le compte `ubuntu`, 4 tentatives en parallèle :
+
+```
+hydra -l ubuntu -P /tmp/mots.txt -t 4 -f ssh://192.168.77.50
+```
+
+| Étape | Observation |
+|---|---|
+| Déroulement | Démarré à 06:08:02 UTC, terminé à 06:08:26 UTC (24 secondes), 20 identifiants testés, 0 mot de passe valide trouvé (attendu : le dictionnaire ne contient pas le vrai mot de passe) |
+| Alertes dans Wazuh | **33 alertes** d'échec d'authentification sur `sensor` dans l'heure suivant l'essai, contre 5 pour le test manuel : le volume d'alertes suit le volume d'essais |
+| Règle franchie | Une alerte **« sshd: brute force trying... »** apparaît dans le Top 5 des alertes, absente du premier essai : le passage de 3 à 20 échecs rapprochés a déclenché la règle de force brute |
+| Nouveaux groupes et conformité | Apparition du groupe `access_control` en tête, et de l'exigence PCI DSS **11.4** (détection d'intrusion), en plus de 10.2.4 et 10.2.5 déjà vues |
+| Niveau 12 ou plus | 0 — la règle de force brute s'est déclenchée à un niveau de gravité inférieur à 12, à confirmer avec le détail de l'alerte |
+
+**Lecture** : le seuil de détection de force brute se situe entre 3 échecs (non détecté comme force brute) et 20 échecs en 24 secondes (détecté). Le `rule.id` exact et le niveau précis de l'alerte « brute force » restent à relever dans l'onglet Events, de même que l'heure exacte de l'alerte pour calculer le temps de détection.
 
 ## Retour d'expérience
 
@@ -128,8 +149,9 @@ sudo systemctl enable --now wazuh-agent
 - [x] Agent enrôlé sur `sensor`, état « active »
 - [ ] Aligner les versions du manager et de l'agent
 - [x] Première détection : échecs d'authentification SSH depuis Kali, alertes visibles dans Wazuh
-- [ ] Scénario de force brute (une douzaine d'échecs rapprochés) et seuil d'alerte
-- [ ] Relevé des `rule.id`, niveaux et heures pour chaque alerte
+- [x] Scénario de force brute (hydra, 20 essais) : règle « brute force » déclenchée
+- [ ] Relevé précis des `rule.id`, niveaux et heures de chaque alerte (temps de détection)
+- [ ] Mesure des faux positifs sur trafic légitime
 - [ ] Mesures : taux de détection, faux positifs, temps de détection
 - [ ] Règles de détection personnalisées, cartographiées sur MITRE ATT&CK
 - [ ] Agrandissement du disque de `soc` (25 Go, juste à moyen terme)
@@ -144,7 +166,8 @@ sudo systemctl enable --now wazuh-agent
 | Scénario | Essais | Détectés | Faux positifs | Temps de détection moyen |
 |---|---|---|---|---|
 | Échecs SSH, utilisateur inexistant | | | | |
-| Échecs SSH, utilisateur existant | 1 (3 échecs) | Oui : alertes d'échec d'authentification | Non mesurés | À relever |
+| Échecs SSH, utilisateur existant (manuel) | 1 essai, 3 échecs | Oui : 5 alertes d'échec d'authentification | Non mesurés | À relever |
+| Force brute SSH (hydra, dictionnaire) | 1 essai, 20 échecs en 24 s | Oui : 33 alertes, dont la règle « brute force » | Non mesurés | À relever |
 | Force brute SSH (hydra depuis Kali) | | | | |
 
 Protocole : plusieurs essais par scénario, heure de l'attaque et heure de l'alerte relevées, résultats consignés dans [`reports/`](reports/).
@@ -168,7 +191,8 @@ wazuh-mini-soc/
 ├── screenshots/
 │   ├── wazuh-login.png
 │   ├── agent-sensor-active.jpeg
-│   └── detection-ssh-dashboard.png
+│   ├── detection-ssh-dashboard.png
+│   └── detection-bruteforce-dashboard.png
 └── reports/
 ```
 
@@ -187,6 +211,7 @@ Objectif : opérations de sécurité (SOC) et conception de solutions de cybers�
 | 4 nov. 2026 | Deuxième échec, puis ajustement des ressources (4 vCPU, 8 Go) et installation réussie. Agent installé sur `sensor`. |
 | 9 nov. 2026 | Agent `sensor` confirmé « active ». Captures ajoutées au dépôt. |
 
-| 9 nov. 2026 | Première attaque SSH depuis Kali contre `sensor` (3 échecs, compte existant) : traces dans `auth.log` et 5 alertes d'authentification dans Wazuh. Relevé des règles et des temps de détection à faire. |
+| 9 nov. 2026 | Première attaque SSH depuis Kali contre `sensor` (3 échecs, compte existant) : traces dans `auth.log` et 5 alertes d'authentification dans Wazuh. |
+| 9 nov. 2026 | Force brute automatisée avec hydra (20 essais en 24 s) : 33 alertes générées, règle « brute force » franchie pour la première fois. Nouvelle exigence PCI DSS 11.4 associée. |
 
-*Prochaine étape : scénario de force brute depuis Kali, relevé des `rule.id`, niveaux et temps de détection, puis règle personnalisée.*
+*Prochaine étape : relevé précis des `rule.id`, niveaux et heures dans l'onglet Events pour calculer le temps de détection, mesure des faux positifs sur trafic légitime, puis règle de détection personnalisée.*
