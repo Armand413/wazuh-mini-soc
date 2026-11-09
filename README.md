@@ -14,7 +14,7 @@ Ce projet reproduit à petite échelle le fonctionnement d'un centre des opérat
 
 L'objectif est de boucler le cycle **attaque, journal, détection, alerte, réponse**, puis de **mesurer** la qualité de la détection (taux de détection, faux positifs, temps de détection) plutôt que de se limiter à une démonstration.
 
-**État actuel :** l'infrastructure est déployée et opérationnelle (Wazuh installé, agent enrôlé). Les campagnes d'attaque et les mesures sont en cours.
+**État actuel :** l'infrastructure est déployée et opérationnelle (Wazuh installé, agent enrôlé) et une **première détection a été obtenue** : des échecs d'authentification SSH joués depuis Kali ont généré des alertes dans Wazuh. Les campagnes de mesure et les règles personnalisées sont en cours.
 
 ## Compétences mises en œuvre
 
@@ -25,7 +25,7 @@ L'objectif est de boucler le cycle **attaque, journal, détection, alerte, répo
 | SIEM | Déploiement de Wazuh en tout-en-un (indexer, manager, dashboard, Filebeat), enrôlement d'un agent, supervision depuis le tableau de bord |
 | Diagnostic | Analyse de deux échecs d'installation à partir des journaux (`wazuh-install.log`, `ossec.log`, `journalctl`), démarche par hypothèses et tests |
 | Rigueur opérationnelle | Snapshots avant chaque changement, documentation des écarts et des erreurs, périmètre d'attaque strictement limité au laboratoire |
-| Détection (en cours) | Attaques SSH depuis Kali, règles personnalisées, cartographie MITRE ATT&CK, mesures |
+| Détection | Premières alertes obtenues à partir d'échecs d'authentification SSH joués depuis Kali ; lecture des alertes dans le tableau de bord (groupes de règles, exigences PCI DSS associées). En cours : mesures, règles personnalisées, cartographie MITRE ATT&CK |
 
 ## Architecture
 
@@ -66,6 +66,10 @@ Hôte : PC Windows, Intel Core i7-1185G7, 16 Go de RAM. Le détail est dans [`ar
 
 ![Liste des agents Wazuh avec sensor à l'état active](screenshots/agent-sensor-active.jpeg)
 
+**Première détection** : alertes d'authentification générées sur `sensor` après des échecs SSH depuis Kali (vue de l'agent, dernière heure) :
+
+![Tableau de bord Threat Hunting de l'agent sensor après des échecs SSH](screenshots/detection-ssh-dashboard.png)
+
 ## Déploiement
 
 Sur `soc`, avec les autres VM éteintes (l'hôte est à 16 Go de RAM) :
@@ -92,6 +96,19 @@ sudo WAZUH_MANAGER="192.168.77.40" apt install -y wazuh-agent
 sudo systemctl enable --now wazuh-agent
 ```
 
+## Première détection
+
+**Scénario joué** : trois échecs d'authentification SSH vers `sensor`, depuis Kali (192.168.77.10), avec un compte existant (`ubuntu`) et un mauvais mot de passe.
+
+| Étape | Observation |
+|---|---|
+| Trace sur `sensor` (`/var/log/auth.log`) | `authentication failure`, puis `Failed password for ubuntu from 192.168.77.10`, puis deux échecs répétés, de 10:49:27 à 10:49:43 (UTC). L'IP de l'attaquant est bien journalisée. |
+| Alertes dans Wazuh | 5 alertes d'échec d'authentification sur l'agent `sensor` dans l'heure de l'essai, 0 alerte de niveau 12 ou supérieur, 0 authentification réussie. |
+| Types d'alertes | `sshd: authentication failed`, `PAM: User login failed`, et un message `syslog` de type mot de passe manqué. |
+| Groupes de règles | `authentication_failed`, `sshd`, `pam`, `syslog`, `access_control`, avec les exigences PCI DSS 10.2.4 et 10.2.5 associées automatiquement. |
+
+**Lecture** : trois échecs suffisent à produire des alertes de gravité faible. Le seuil de l'alerte de force brute reste à tester avec davantage d'échecs rapprochés. Les identifiants de règles (`rule.id`), les niveaux exacts et les temps de détection seront relevés alert par alerte dans l'onglet Events avant d'être publiés.
+
 ## Retour d'expérience
 
 | Problème | Analyse | Résolution |
@@ -99,6 +116,8 @@ sudo systemctl enable --now wazuh-agent
 | Deux installations de Wazuh échouées | Le journal d'installation montre que `wazuh-manager` n'a pas démarré dans le délai imparti (timeout), puis que l'installateur a tout annulé. | Retour à un snapshot sain, passage de 2 à 4 vCPU et à 8 Go de RAM, autres VM éteintes, installation dans `tmux` avec journalisation détaillée. Installation réussie ensuite. La cause exacte n'a pas été isolée ; un démarrage trop lent faute de ressources est l'hypothèse la plus probable. |
 | `ping` vers le dépôt Wazuh sans réponse | Le serveur ne répond pas aux pings, ce n'est pas une panne réseau. | Validation par téléchargement (`curl -sI` renvoie `HTTP/2 200`) et par `ping 8.8.8.8`. |
 | Services `inactive` après restauration d'un snapshot | `inactive` s'affiche aussi pour un service jamais installé. | Contrôle de l'installation avec `dpkg -l` avant de conclure à un échec. |
+| « No results » dans le tableau de bord après l'attaque | La période sélectionnée était un seul instant (début égal à fin), donc vide par construction. | Réglage sur « Last 1 hour » : les alertes sont apparues. Une vue vide ne prouve pas l'absence de détection. |
+| Fuseau horaire affiché différent de celui des journaux | Le tableau de bord affichait une heure locale, les journaux de `sensor` sont en UTC. | Comparer toujours deux heures dans le même fuseau avant de calculer un temps de détection. |
 | Noms d'interface réseau différents selon les VM | Le Host-Only est `enp0s3` sur une VM et `enp0s8` sur une autre. | Vérification systématique avec `ip -br addr` avant toute modification réseau. |
 
 ## Avancement
@@ -108,7 +127,9 @@ sudo systemctl enable --now wazuh-agent
 - [x] Wazuh installé, tableau de bord accessible
 - [x] Agent enrôlé sur `sensor`, état « active »
 - [ ] Aligner les versions du manager et de l'agent
-- [ ] Première détection : échecs SSH et force brute depuis Kali
+- [x] Première détection : échecs d'authentification SSH depuis Kali, alertes visibles dans Wazuh
+- [ ] Scénario de force brute (une douzaine d'échecs rapprochés) et seuil d'alerte
+- [ ] Relevé des `rule.id`, niveaux et heures pour chaque alerte
 - [ ] Mesures : taux de détection, faux positifs, temps de détection
 - [ ] Règles de détection personnalisées, cartographiées sur MITRE ATT&CK
 - [ ] Agrandissement du disque de `soc` (25 Go, juste à moyen terme)
@@ -118,12 +139,12 @@ sudo systemctl enable --now wazuh-agent
 
 ## Résultats
 
-*À compléter après les campagnes d'attaque. Aucune valeur n'est publiée avant d'avoir été mesurée.*
+*Une seule ligne est renseignée à ce jour (un essai). Les autres sont à compléter après les campagnes d'attaque. Aucune valeur n'est publiée avant d'avoir été mesurée.*
 
 | Scénario | Essais | Détectés | Faux positifs | Temps de détection moyen |
 |---|---|---|---|---|
 | Échecs SSH, utilisateur inexistant | | | | |
-| Échecs SSH, utilisateur existant | | | | |
+| Échecs SSH, utilisateur existant | 1 (3 échecs) | Oui : alertes d'échec d'authentification | Non mesurés | À relever |
 | Force brute SSH (hydra depuis Kali) | | | | |
 
 Protocole : plusieurs essais par scénario, heure de l'attaque et heure de l'alerte relevées, résultats consignés dans [`reports/`](reports/).
@@ -146,7 +167,8 @@ wazuh-mini-soc/
 │   └── setup-guide.md
 ├── screenshots/
 │   ├── wazuh-login.png
-│   └── agent-sensor-active.jpeg
+│   ├── agent-sensor-active.jpeg
+│   └── detection-ssh-dashboard.png
 └── reports/
 ```
 
@@ -165,4 +187,6 @@ Objectif : opérations de sécurité (SOC) et conception de solutions de cybers�
 | 4 nov. 2026 | Deuxième échec, puis ajustement des ressources (4 vCPU, 8 Go) et installation réussie. Agent installé sur `sensor`. |
 | 9 nov. 2026 | Agent `sensor` confirmé « active ». Captures ajoutées au dépôt. |
 
-*Prochaine étape : première détection depuis Kali et relevé des temps de détection.*
+| 9 nov. 2026 | Première attaque SSH depuis Kali contre `sensor` (3 échecs, compte existant) : traces dans `auth.log` et 5 alertes d'authentification dans Wazuh. Relevé des règles et des temps de détection à faire. |
+
+*Prochaine étape : scénario de force brute depuis Kali, relevé des `rule.id`, niveaux et temps de détection, puis règle personnalisée.*
