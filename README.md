@@ -201,7 +201,7 @@ wazuh-mini-soc/
 **[Armand Judicaël KI]**, étudiant ingénieur en cybersécurité, École Polytechnique de Ouagadougou (EPO), Burkina Faso.
 Objectif : opérations de sécurité (SOC) et conception de solutions de cybersécurité.
 
-[LinkedIn](www.linkedin.com/in/armand-ki-a43667346) · [kiarmand413@gmail.com](mailto:kiarmand413@gmail.com)
+[www.linkedin.com/in/armand-ki-a43667346](www.linkedin.com/in/armand-ki-a43667346) · [kiarmand413@gmail.com](mailto:kiarmand413@gmail.com)
 
 ## Journal de progression
 
